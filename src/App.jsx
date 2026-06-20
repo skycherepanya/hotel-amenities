@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { Undo, Upload, RefreshCw, CheckCircle } from 'lucide-react';
 
@@ -13,30 +13,6 @@ function getAmenityColor(name) {
   if (lower.includes('vip 7')) return 'bg-violet-300 text-violet-900';
   if (lower.includes("kid's") || lower.includes("kids")) return 'bg-pink-200 text-pink-800';
   return 'bg-gray-200 text-gray-800';
-}
-
-function parseDescription(desc) {
-  if (!desc) return { time: null, note: '' };
-  
-  // Look for Arrival time: HH:MM or N/A
-  const match = desc.match(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)\s*(.*)/is);
-  if (match) {
-    const timeRaw = match[1].trim();
-    const time = timeRaw.toLowerCase() === 'n/a' ? null : timeRaw;
-    const note = match[2].trim();
-    return { time, note };
-  }
-  
-  // Fallback: look for just a time pattern or N/A
-  const fallbackMatch = desc.match(/(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)\s*(.*)/is);
-  if (fallbackMatch) {
-    const timeRaw = fallbackMatch[1].trim();
-    const time = timeRaw.toLowerCase() === 'n/a' ? null : timeRaw;
-    const note = fallbackMatch[2].trim();
-    return { time, note };
-  }
-
-  return { time: null, note: desc.trim() };
 }
 
 export default function App() {
@@ -85,71 +61,54 @@ export default function App() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
-      const bstr = evt.target.result;
-      const wb = XLSX.read(bstr, { type: 'binary' });
-      const wsname = wb.SheetNames[0];
-      const ws = wb.Sheets[wsname];
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+    reader.onload = (event) => {
+      const data = new Uint8Array(event.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
 
-      let headerRowIndex = -1;
-      for (let i = 0; i < data.length; i++) {
-        if (data[i][0] === 'Location') {
-          headerRowIndex = i;
-          break;
-        }
-      }
+      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      const headerIndex = rawData.findIndex(row => String(row[0]).trim() === 'Location');
 
-      if (headerRowIndex === -1) {
-        alert('Could not find a row starting with "Location".');
+      if (headerIndex === -1) {
+        alert('Error: Could not find the "Location" header. Please check the file format.');
         return;
       }
 
-      const headers = data[headerRowIndex];
-      const locIdx = headers.indexOf('Location');
-      const nameIdx = headers.indexOf('Case Contact Name');
-      const amenityIdx = headers.indexOf('Amenity Name: Amenity Nam');
-      const descIdx = headers.indexOf('Description');
+      const parsedRooms = {};
 
-      if (locIdx === -1) {
-        alert('Missing required columns.');
-        return;
-      }
+      for (let i = headerIndex + 1; i < rawData.length; i++) {
+        const row = rawData[i];
+        const location = String(row[0]).trim();
 
-      const roomsMap = {};
+        if (location === 'Total' || location === '') break;
 
-      for (let i = headerRowIndex + 1; i < data.length; i++) {
-        const row = data[i];
-        if (!row || row.length === 0) continue;
-        
-        const location = row[locIdx];
-        if (location === 'Total') break; // Stop parsing
+        const guestName = String(row[1] || "").trim();
+        const amenityName = String(row[3] || "").trim();
+        const rawDescription = String(row[4] || "");
 
-        if (!location) continue; // Skip empty locations
+        const timeMatch = rawDescription.match(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)/i);
+        const time = timeMatch && timeMatch[1] !== 'N/A' ? timeMatch[1] : null;
+        const note = rawDescription.replace(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)\s*/i, '').trim();
 
-        const roomNumber = String(location).trim();
-        const guestName = nameIdx !== -1 && row[nameIdx] ? String(row[nameIdx]).trim() : '';
-        const amenityName = amenityIdx !== -1 && row[amenityIdx] ? String(row[amenityIdx]).trim() : '';
-        const description = descIdx !== -1 && row[descIdx] ? String(row[descIdx]).trim() : '';
-
-        const { time, note } = parseDescription(description);
-
-        if (!roomsMap[roomNumber]) {
-          roomsMap[roomNumber] = {
-            roomNumber,
-            guestName,
+        if (!parsedRooms[location]) {
+          parsedRooms[location] = {
+            roomNumber: location,
+            guestName: guestName,
             amenities: []
           };
         }
 
-        if (amenityName) {
-          roomsMap[roomNumber].amenities.push({ name: amenityName, time, note });
-        }
+        parsedRooms[location].amenities.push({
+          name: amenityName,
+          time: time,
+          note: note
+        });
       }
 
-      setParsedData(Object.values(roomsMap));
+      setParsedData(Object.values(parsedRooms));
     };
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
 
   const handleResetDay = () => {
