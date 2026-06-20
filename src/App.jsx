@@ -99,8 +99,14 @@ export default function App() {
         }
 
         // Fuzzy "Location" header detection to handle casing/spacing/hidden-char variations.
-        const isHeader = (val) => val && /^\s*location\s*$/i.test(String(val));
-        const headerIndex = rawData.findIndex((row) => isHeader(row?.[0]));
+        const isLocationHeader = (val) => val && /^\s*location\s*$/i.test(String(val));
+        const isTotalRow = (val) => val && /^\s*total\s*$/i.test(String(val));
+        const arrivalTimePattern = /Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)/i;
+        const extractArrivalTime = (match) => {
+          if (!match || !match[1]) return null;
+          return /^n\/a$/i.test(match[1]) ? null : match[1];
+        };
+        const headerIndex = rawData.findIndex((row) => isLocationHeader(row?.[0]));
         if (headerIndex === -1) {
           throw new Error('Could not locate the "Location" column. File format may be incorrect.');
         }
@@ -112,7 +118,7 @@ export default function App() {
           const row = Array.isArray(rawData[i]) ? rawData[i] : [];
 
           const location = row[0] ? String(row[0]).trim() : '';
-          if (/^\s*total\s*$/i.test(location)) break;
+          if (isTotalRow(location)) break;
           if (!location) continue;
 
           const guestName = row[1] ? String(row[1]).trim() : '';
@@ -120,12 +126,12 @@ export default function App() {
           const rawDescription = row[4] ? String(row[4]) : '';
 
           // Pull the arrival time with a safe regex match and preserve null when absent/N/A.
-          const timeMatch = rawDescription.match(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)/i);
-          const time = timeMatch && timeMatch[1] && timeMatch[1].toUpperCase() !== 'N/A' ? timeMatch[1] : null;
+          const timeMatch = rawDescription.match(arrivalTimePattern);
+          const time = extractArrivalTime(timeMatch);
 
           // Remove the arrival-time fragment to leave a clean amenity note.
           const note = rawDescription
-            .replace(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)\s*/i, '')
+            .replace(arrivalTimePattern, '')
             .trim();
 
           if (!parsedRooms[location]) {
@@ -153,7 +159,9 @@ export default function App() {
 
         setParsedData(finalData);
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown parsing error';
+        const message = error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred while parsing the Excel file. Please verify the file format and try again.';
         console.error('Excel Parsing Error:', error);
         if (error instanceof Error && error.stack) {
           console.error(error.stack);
@@ -162,8 +170,9 @@ export default function App() {
       }
     };
 
-    reader.onerror = () => {
-      alert('Failed to read the file. It might be corrupted.');
+    reader.onerror = (errorEvent) => {
+      console.error('File read error:', errorEvent);
+      alert('Failed to read the file. Please ensure the file is accessible and try again.');
     };
 
     reader.readAsArrayBuffer(file);
