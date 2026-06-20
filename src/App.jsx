@@ -56,58 +56,125 @@ export default function App() {
     localStorage.setItem('deliveryHistory', JSON.stringify(deliveryHistory));
   }, [deliveryHistory]);
 
+  /**
+   * Handles Excel upload and parses Salesforce amenities rows into room-grouped data.
+   * Uses defensive parsing to tolerate odd headers, sparse cells, and malformed files.
+   * @param {Event} e - File input change event.
+   */
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+    const file = e?.target?.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
+
     reader.onload = (event) => {
-      const data = new Uint8Array(event.target.result);
-      const workbook = XLSX.read(data, { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      const sheet = workbook.Sheets[sheetName];
-
-      const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      const headerIndex = rawData.findIndex(row => String(row[0]).trim() === 'Location');
-
-      if (headerIndex === -1) {
-        alert('Error: Could not find the "Location" header. Please check the file format.');
-        return;
-      }
-
-      const parsedRooms = {};
-
-      for (let i = headerIndex + 1; i < rawData.length; i++) {
-        const row = rawData[i];
-        const location = String(row[0]).trim();
-
-        if (location === 'Total' || location === '') break;
-
-        const guestName = String(row[1] || "").trim();
-        const amenityName = String(row[3] || "").trim();
-        const rawDescription = String(row[4] || "");
-
-        const timeMatch = rawDescription.match(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)/i);
-        const time = timeMatch && timeMatch[1] !== 'N/A' ? timeMatch[1] : null;
-        const note = rawDescription.replace(/Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)\s*/i, '').trim();
-
-        if (!parsedRooms[location]) {
-          parsedRooms[location] = {
-            roomNumber: location,
-            guestName: guestName,
-            amenities: []
-          };
+      try {
+        // Validate XLSX availability before parsing any binary data.
+        if (typeof XLSX === 'undefined' || !XLSX || typeof XLSX.read !== 'function') {
+          throw new Error('XLSX library is not loaded.');
         }
 
-        parsedRooms[location].amenities.push({
-          name: amenityName,
-          time: time,
-          note: note
-        });
-      }
+        // Read uploaded bytes from FileReader and ensure we received a valid buffer.
+        const result = event?.target?.result;
+        if (!result) {
+          throw new Error('No file data was read from the upload.');
+        }
+        const data = new Uint8Array(result);
+        const workbook = XLSX.read(data, { type: 'array' });
 
-      setParsedData(Object.values(parsedRooms));
+        // Resolve the first worksheet from the workbook safely.
+        const sheetName = workbook?.SheetNames?.[0];
+        if (!sheetName) {
+          throw new Error('The uploaded Excel workbook has no sheets.');
+        }
+        const sheet = workbook?.Sheets?.[sheetName];
+        if (!sheet) {
+          throw new Error('Unable to access the first sheet in the workbook.');
+        }
+
+        // Convert worksheet to a raw 2D array to avoid brittle metadata-driven parsing.
+        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        if (!Array.isArray(rawData) || rawData.length === 0) {
+          throw new Error('The uploaded Excel sheet is empty.');
+        }
+
+        // Fuzzy "Location" header detection to handle casing/spacing/hidden-char variations.
+        const isLocationHeader = (val) => val && /^\s*location\s*$/i.test(String(val));
+        const isTotalRow = (val) => val && /^\s*total\s*$/i.test(String(val));
+        const arrivalTimePattern = /Arrival time:\s*(\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|N\/A)/i;
+        const extractArrivalTime = (match) => {
+          if (!match || !match[1]) return null;
+          return /^n\/a$/i.test(match[1]) ? null : match[1];
+        };
+        const headerIndex = rawData.findIndex((row) => isLocationHeader(row?.[0]));
+        if (headerIndex === -1) {
+          throw new Error('Could not locate the "Location" column. File format may be incorrect.');
+        }
+
+        const parsedRooms = {};
+
+        // Extract row values, parse time/note, and group amenities by location.
+        for (let i = headerIndex + 1; i < rawData.length; i++) {
+          const row = Array.isArray(rawData[i]) ? rawData[i] : [];
+
+          const location = row[0] ? String(row[0]).trim() : '';
+          if (isTotalRow(location)) break;
+          if (!location) continue;
+
+          const guestName = row[1] ? String(row[1]).trim() : '';
+          const amenityName = row[3] ? String(row[3]).trim() : '';
+          const rawDescription = row[4] ? String(row[4]) : '';
+
+          // Pull the arrival time with a safe regex match and preserve null when absent/N/A.
+          const timeMatch = rawDescription.match(arrivalTimePattern);
+          const time = extractArrivalTime(timeMatch);
+
+          // Remove the arrival-time fragment to leave a clean amenity note.
+          const note = rawDescription
+            .replace(arrivalTimePattern, '')
+            .trim();
+
+          if (!parsedRooms[location]) {
+            parsedRooms[location] = {
+              roomNumber: location,
+              guestName,
+              amenities: []
+            };
+          }
+
+          if (amenityName) {
+            parsedRooms[location].amenities.push({
+              name: amenityName,
+              time,
+              note
+            });
+          }
+        }
+
+        // Finalize parsed payload and update state only when we have useful data.
+        const finalData = Object.values(parsedRooms);
+        if (finalData.length === 0) {
+          throw new Error('No valid amenities data found below the header.');
+        }
+
+        setParsedData(finalData);
+      } catch (error) {
+        const message = error instanceof Error
+          ? error.message
+          : 'An unexpected error occurred while parsing the Excel file. Please verify the file format and try again.';
+        console.error('Excel Parsing Error:', error);
+        if (error instanceof Error && error.stack) {
+          console.error(error.stack);
+        }
+        alert(`Parsing Error: ${message}`);
+      }
     };
+
+    reader.onerror = (errorEvent) => {
+      console.error('File read error:', errorEvent);
+      alert('Failed to read the file. Please ensure the file is accessible and try again.');
+    };
+
     reader.readAsArrayBuffer(file);
   };
 
